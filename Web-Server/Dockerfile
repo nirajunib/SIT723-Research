@@ -1,4 +1,3 @@
-# This file sets up a web server with Kyber algorithm
 # openssl version 3.0 or above
 ARG OPENSSL_TAG=openssl-3.4.0
 
@@ -6,7 +5,7 @@ FROM ubuntu:latest
 ARG OPENSSL_TAG
 
 # install apache
-RUN apt-get update && apt-get upgrade
+RUN apt-get -y update && apt-get -y upgrade
 RUN apt install -y apache2 
 RUN apt install -y apache2-utils 
 
