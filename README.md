@@ -1,0 +1,34 @@
+# TLS Benchmark Discrepancy Research
+
+This repository contains a collection of scripts and output files used to benchmark and analyze implementation of RSA vs ML-DSA in TCP and QUIC. The project was conducted as part of a research linked below.
+
+> **Note:** The final and most up-to-date version of the code used in the research report is located in the `TLSScriptsWithBenchmark/` directory.
+
+---
+
+## Final Benchmark Version
+
+The codebase used in the **final research report** is located in:
+
+TLSScriptsWithBenchmark/Scripts/
+
+This version contains the most stable, cleaned, and benchmark-accurate scripts including:
+- RSA and Post-Quantum configurations
+- TLS Implementation
+- Accurate Benchmarking
+
+---
+
+## Sample Output & Visualization
+
+- Raw client and server output logs are located in `Output-Client/Output/` and `Output-Server/Output/` respectively.
+- Benchmark plotting scripts can be found in `Plot/Plot/`, used to visualize discrepancies across various tests.
+
+---
+
+## 🔍 Development Timeline
+
+Due to the iterative nature of the research, multiple directories exist representing various development stages. Instead of overwriting scripts, separate folders were created to preserve test history and provide flexibility for rollback and comparisons.
+
+---
+
