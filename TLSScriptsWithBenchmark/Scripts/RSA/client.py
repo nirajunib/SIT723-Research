@@ -21,23 +21,19 @@ TLS_CERT_PEM = "server.pem"
 PRIVATE_KEY_FILE = "client_private.pem"
 PUBLIC_KEY_FILE = "client_public.pem"
 
-# BENCHMARKING
 BENCHMARK_DIR = "client_benchmarks"
 os.makedirs(BENCHMARK_DIR, exist_ok=True)
 
 
 def log(msg, verbose=True):
-    """Print log messages if verbose flag is True."""
     if verbose:
         print(f"[CLIENT] {msg}")
 
 
 def load_or_generate_keys():
-    """Load or generate RSA keys for the client."""
     if Path(PRIVATE_KEY_FILE).exists() and Path(PUBLIC_KEY_FILE).exists():
         private_key = RSA.import_key(Path(PRIVATE_KEY_FILE).read_bytes())
         return private_key, private_key.publickey()
-
     private_key = RSA.generate(2048)
     Path(PRIVATE_KEY_FILE).write_bytes(private_key.export_key())
     Path(PUBLIC_KEY_FILE).write_bytes(private_key.publickey().export_key())
@@ -45,54 +41,50 @@ def load_or_generate_keys():
 
 
 def sign_data(private_key, data):
-    """Sign data using the client's private key."""
     h = SHA256.new(data)
     return pkcs1_15.new(private_key).sign(h)
 
-# BENCHMARKING: Resource monitoring function
 
-
-def monitor_resources(interval, running_flag, stats_list):
-    """Monitor CPU and memory usage during the benchmark."""
+def monitor_resources(interval, running_flag, stats_list, data_tracker):
     process = psutil.Process()
     start_time = time.time()
-
+    prev_bytes = 0
     while running_flag["active"]:
         cpu = process.cpu_percent(interval=None)
-        mem = process.memory_info().rss / (1024 * 1024)  # in MB
+        mem = process.memory_info().rss / (1024 * 1024)
         timestamp = time.time() - start_time
-        stats_list.append((timestamp, cpu, mem))
+        current_bytes = data_tracker["bytes"]
+        throughput = (current_bytes - prev_bytes) / (1024 * 1024) / interval
+        prev_bytes = current_bytes
+        stats_list.append((timestamp, cpu, mem, throughput))
         time.sleep(interval)
 
-# BENCHMARKING: Save benchmark data to CSV
 
-
-def save_benchmark(protocol, connection_time, stats_list, signed_msg_size):
-    """Save the benchmarking results to a CSV file."""
+def save_benchmark(protocol, connection_time, stats_list, signed_msg_size, first_data_latency):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     file_path = os.path.join(BENCHMARK_DIR, f"{protocol}_{timestamp}.csv")
-    throughput = signed_msg_size / (1024 * 1024) / connection_time  # in MB/s
-
     with open(file_path, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Time(s)", "CPU (%)", "Memory (MB)", "Connection Time(s)",
-                        "Signed Message Size (bytes)", "Throughput (MB/s)"])
+        writer.writerow([
+            "Time(s)", "CPU (%)", "Memory (MB)", "Throughput (MB/s)",
+            "Connection Time(s)", "Signed Message Size (bytes)", "First Data Latency (s)"
+        ])
         for row in stats_list:
             writer.writerow(
-                [*row, connection_time, signed_msg_size, throughput])
+                [*row, connection_time, signed_msg_size, first_data_latency])
 
 
 def start_tcp_client(verbose=False):
-    """Start the TCP client."""
     private_key, _ = load_or_generate_keys()
     data = b"x" * DATA_SIZE
     signature = sign_data(private_key, data)
     full_data = data + signature
 
-    stats = []  # BENCHMARKING
+    stats = []
+    data_tracker = {"bytes": 0}
     running_flag = {"active": True}
     monitor_thread = threading.Thread(
-        target=monitor_resources, args=(0.1, running_flag, stats))
+        target=monitor_resources, args=(0.1, running_flag, stats, data_tracker))
     monitor_thread.start()
 
     context = ssl.create_default_context()
@@ -110,57 +102,66 @@ def start_tcp_client(verbose=False):
                 f"SSL handshake completed. Status: {ssl_sock.getpeercert()}", verbose)
 
             total_sent = 0
+            first_data_time = None
             while total_sent < len(full_data):
                 end = min(total_sent + CHUNK_SIZE, len(full_data))
                 sent = ssl_sock.send(full_data[total_sent:end])
                 if sent == 0:
                     raise RuntimeError("Socket connection broken")
                 total_sent += sent
-                # log(f"Sent {total_sent} / {len(full_data)} bytes", verbose)
+                data_tracker["bytes"] += sent
+                if first_data_time is None and total_sent >= CHUNK_SIZE:
+                    first_data_time = time.time()
 
-            # ✅ Ensure server reads all data before closure
             ssl_sock.shutdown(socket.SHUT_WR)
             time.sleep(1)
 
-            end_time = time.time()
-            running_flag["active"] = False
-            monitor_thread.join()
+    end_time = time.time()
+    running_flag["active"] = False
+    monitor_thread.join()
 
-            connection_time = end_time - start_time
-            save_benchmark("tcp", connection_time, stats, len(full_data))
-            log(f"✅ Sent {total_sent} bytes in {connection_time:.2f} seconds", verbose)
+    connection_time = end_time - start_time
+    first_data_latency = (
+        first_data_time - start_time) if first_data_time else None
+    save_benchmark("tcp", connection_time, stats,
+                   len(full_data), first_data_latency)
+    log(f"✅ Sent {total_sent} bytes in {connection_time:.2f} seconds", verbose)
 
 
 async def start_quic_client(verbose=False):
-    """Start the QUIC client."""
     private_key, _ = load_or_generate_keys()
     data = b"x" * DATA_SIZE
     signature = sign_data(private_key, data)
     full_data = data + signature
 
-    # QUIC Configuration
     configuration = QuicConfiguration(is_client=True)
-    # Don't verify server certificate for testing
     configuration.verify_mode = ssl.CERT_NONE
     configuration.load_cert_chain(certfile=TLS_CERT)
     configuration.load_verify_locations(cafile=TLS_CERT)
 
-    stats = []  # BENCHMARKING
+    stats = []
+    data_tracker = {"bytes": 0}
     running_flag = {"active": True}
     monitor_thread = threading.Thread(
-        target=monitor_resources, args=(0.1, running_flag, stats))
+        target=monitor_resources, args=(0.1, running_flag, stats, data_tracker))
     monitor_thread.start()
 
     start_time = time.time()
-    async with connect("127.0.0.1", 443, configuration=configuration) as connection:
+    async with connect("127.0.0.1", 4443, configuration=configuration) as connection:
         stream_id = connection._quic.get_next_available_stream_id()
         total_sent = 0
+        first_data_time = None
 
         while total_sent < len(full_data):
             end = min(total_sent + CHUNK_SIZE, len(full_data))
+            chunk = full_data[total_sent:end]
             connection._quic.send_stream_data(
-                stream_id, full_data[total_sent:end], end_stream=False)
-            total_sent += end - total_sent
+                stream_id, chunk, end_stream=False)
+            chunk_size = len(chunk)
+            total_sent += chunk_size
+            data_tracker["bytes"] += chunk_size
+            if first_data_time is None and total_sent >= CHUNK_SIZE:
+                first_data_time = time.time()
 
         connection._quic.send_stream_data(stream_id, b"", end_stream=True)
         await connection.wait_closed()
@@ -170,12 +171,14 @@ async def start_quic_client(verbose=False):
     monitor_thread.join()
 
     connection_time = end_time - start_time
-    save_benchmark("quic", connection_time, stats, len(full_data))
+    first_data_latency = (
+        first_data_time - start_time) if first_data_time else None
+    save_benchmark("quic", connection_time, stats,
+                   len(full_data), first_data_latency)
     log(f"✅ Sent {total_sent} bytes in {connection_time:.2f} seconds", verbose)
 
 
 def run_client(protocol='tcp', verbose=False):
-    """Run the client based on the specified protocol."""
     if protocol == 'tcp':
         start_tcp_client(verbose)
     elif protocol == 'quic':

@@ -6,20 +6,20 @@ import time
 import os
 import csv
 import threading
-import psutil  # Benchmarking
+import psutil
 from dilithium_py.ml_dsa import ML_DSA_44
 from aioquic.asyncio import serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import StreamDataReceived, HandshakeCompleted
 
-DATA_SIZE = 5 * 1024 * 1024  # 5MB
+# Constants
+DATA_SIZE = 5 * 1024 * 1024
 CHUNK_SIZE = 4096
 TLS_CERT = "server.crt"
 TLS_KEY = "server.key"
 PUBLIC_KEY_PATH = "client_keys/dilithium_public.key"
 
-# Benchmarking directory
 BENCHMARK_DIR = "server_benchmarks"
 os.makedirs(BENCHMARK_DIR, exist_ok=True)
 
@@ -36,42 +36,37 @@ def load_public_key():
         return f.read()
 
 
-def monitor_resources(interval, running_flag, stats_list):
+def monitor_resources(interval, running_flag, stats_list, data_tracker):
     process = psutil.Process()
     start_time = time.time()
+    prev_bytes = 0
     while running_flag["active"]:
         cpu = process.cpu_percent(interval=None)
         mem = process.memory_info().rss / (1024 * 1024)
         timestamp = time.time() - start_time
-        stats_list.append((timestamp, cpu, mem))
+        current_bytes = data_tracker["bytes"]
+        throughput = (current_bytes - prev_bytes) / (1024 * 1024) / interval
+        prev_bytes = current_bytes
+        stats_list.append((timestamp, cpu, mem, throughput))
         time.sleep(interval)
 
 
-def save_benchmark(protocol, connection_time, stats_list, signed_msg_size):
+def save_benchmark(protocol, connection_time, stats_list, signed_msg_size, first_data_latency):
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     file_path = os.path.join(BENCHMARK_DIR, f"{protocol}_{timestamp}.csv")
-    throughput = signed_msg_size / (1024 * 1024) / connection_time  # MB/s
-
     with open(file_path, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Time(s)", "CPU (%)", "Memory (MB)", "Connection Time(s)",
-                        "Signed Message Size (bytes)", "Throughput (MB/s)"])
+        writer.writerow(["Time(s)", "CPU (%)", "Memory (MB)", "Throughput (MB/s)",
+                         "Connection Time(s)", "Signed Message Size (bytes)", "First Data Latency (s)"])
         for row in stats_list:
             writer.writerow(
-                [*row, connection_time, signed_msg_size, throughput])
+                [*row, connection_time, signed_msg_size, first_data_latency])
 
 
 def start_tcp_server(verbose=False):
     public_key = load_public_key()
 
-    stats = []
-    running_flag = {"active": True}
-    monitor_thread = threading.Thread(
-        target=monitor_resources, args=(0.1, running_flag, stats))
-    monitor_thread.start()
-
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    # context.load_cert_chain(certfile="server.pem", keyfile="server_key.pem")
     context.load_cert_chain(certfile=TLS_CERT, keyfile=TLS_KEY)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -81,23 +76,43 @@ def start_tcp_server(verbose=False):
         conn, addr = s.accept()
         with context.wrap_socket(conn, server_side=True) as tls_conn:
             log(f"Accepted TLS connection from {addr}", verbose)
+
+            stats = []
+            running_flag = {"active": True}
+            data_tracker = {"bytes": 0}
+            monitor_thread = threading.Thread(
+                target=monitor_resources, args=(0.1, running_flag, stats, data_tracker))
+            monitor_thread.start()
+
             sig_len = int.from_bytes(tls_conn.recv(4), "big")
             signature = tls_conn.recv(sig_len)
 
             received = b""
             start_time = time.time()
+            first_data_time = None
+
             while len(received) < DATA_SIZE:
                 chunk = tls_conn.recv(CHUNK_SIZE)
                 if not chunk:
                     break
                 received += chunk
+                data_tracker["bytes"] += len(chunk)
+                if first_data_time is None and len(received) >= CHUNK_SIZE:
+                    first_data_time = time.time()
+                # Yield control to allow monitoring thread to run
+                time.sleep(0)
+
             end_time = time.time()
             running_flag["active"] = False
             monitor_thread.join()
 
             connection_time = end_time - start_time
+            first_data_latency = (
+                first_data_time - start_time) if first_data_time else None
             total_size = len(received) + len(signature) + 4
-            save_benchmark("tcp", connection_time, stats, total_size)
+
+            save_benchmark("tcp", connection_time, stats,
+                           total_size, first_data_latency)
 
             try:
                 ML_DSA_44.verify(public_key, signature, received)
@@ -107,8 +122,7 @@ def start_tcp_server(verbose=False):
                 log(f"❌ Signature verification failed: {e}", verbose)
 
 
-# ----------- QUIC ------------
-
+# ---------- QUIC --------------
 
 class MyQuicProtocol(QuicConnectionProtocol):
     def __init__(self, *args, verbose=False, **kwargs):
@@ -119,14 +133,13 @@ class MyQuicProtocol(QuicConnectionProtocol):
         self.signature = b""
         self.received = b""
         self.start_time = None
+        self.first_data_time = None
+        self.handshake_end_time = None
 
-        # Benchmarking
         self.stats = []
+        self.data_tracker = {"bytes": 0}
         self.running_flag = {"active": True}
-        self.monitor_thread = threading.Thread(
-            target=monitor_resources, args=(0.1, self.running_flag, self.stats))
-        self.monitor_thread.start()
-        self.handshake_start_time = time.time()
+        self.monitor_thread = None
 
     def log(self, msg):
         if self.verbose:
@@ -135,10 +148,15 @@ class MyQuicProtocol(QuicConnectionProtocol):
     def quic_event_received(self, event):
         if isinstance(event, HandshakeCompleted):
             self.log("✅ TLS handshake completed.")
+            self.handshake_end_time = time.time()
+
+            self.monitor_thread = threading.Thread(
+                target=monitor_resources, args=(0.1, self.running_flag, self.stats, self.data_tracker))
+            self.monitor_thread.start()
+
         elif isinstance(event, StreamDataReceived):
-            if self.start_time is None:
-                self.start_time = time.time()
             self.received += event.data
+            self.data_tracker["bytes"] += len(event.data)
 
             if self.sig_len is None and len(self.received) >= 4:
                 self.sig_len = int.from_bytes(self.received[:4], "big")
@@ -150,14 +168,24 @@ class MyQuicProtocol(QuicConnectionProtocol):
                 self.signature += self.received[:needed]
                 self.received = self.received[needed:]
 
+            # Set first_data_time only after receiving the first full data chunk (excluding signature)
+            if self.first_data_time is None and self.sig_len is not None and len(self.received) >= CHUNK_SIZE:
+                self.first_data_time = time.time()
+            time.sleep(0)  # Yield control to allow monitoring thread to run
+
             if self.sig_len is not None and len(self.received) >= DATA_SIZE:
                 end_time = time.time()
                 self.running_flag["active"] = False
-                self.monitor_thread.join()
+                if self.monitor_thread:
+                    self.monitor_thread.join()
 
-                connection_time = end_time - self.handshake_start_time
+                connection_time = end_time - self.handshake_end_time
+                first_data_latency = (
+                    self.first_data_time - self.handshake_end_time) if self.first_data_time else None
                 total_size = len(self.received) + len(self.signature) + 4
-                save_benchmark("quic", connection_time, self.stats, total_size)
+
+                save_benchmark("quic", connection_time, self.stats,
+                               total_size, first_data_latency)
 
                 try:
                     ML_DSA_44.verify(
@@ -166,6 +194,7 @@ class MyQuicProtocol(QuicConnectionProtocol):
                         f"✅ QUIC: Signature verified. Received {len(self.received)} bytes in {connection_time:.2f}s")
                 except Exception as e:
                     self.log(f"❌ QUIC: Signature verification failed: {e}")
+
                 self._quic.close()
 
 
