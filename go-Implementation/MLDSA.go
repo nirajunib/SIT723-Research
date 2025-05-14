@@ -10,6 +10,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/pem"
+	"encoding/csv"
+	"sync"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +24,8 @@ import (
 	"github.com/cloudflare/circl/sign"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/quic-go/quic-go"
+	"github.com/shirou/gopsutil/v3/cpu"
+    "github.com/shirou/gopsutil/v3/mem"
 )
 
 var (
@@ -30,7 +34,103 @@ var (
 	addr       = flag.String("addr", "localhost:4444", "address to bind/connect")
 	chunkSize  = flag.Int("chunk-size", 64*1024, "chunk size in bytes")
 	size       = flag.Int("size", 1024*1024, "data size to send (client only)")
+	enableMetrics = flag.Bool("metrics", false, "Enable metrics logging")
 )
+
+
+
+// LOGGING
+type MetricsLogger struct {
+    startTime     time.Time
+    connStart     time.Time
+    handshakeTime time.Duration
+    totalBytes    int64
+    lock          sync.Mutex
+    writer        *csv.Writer
+    file          *os.File
+    tickerStop    chan struct{}
+}
+
+func NewMetricsLogger(handshakeTime time.Duration) *MetricsLogger {
+    os.MkdirAll("logs", 0755)
+    filename := fmt.Sprintf("logs/metrics-%s.csv", time.Now().Format("20060102-150405"))
+    file, err := os.Create(filename)
+    if err != nil {
+        log.Fatalf("Failed to create log file: %v", err)
+    }
+
+    writer := csv.NewWriter(file)
+    writer.Write([]string{
+        "Elapsed(ms)", "CPU(%)", "Memory(MB)", "Throughput(MB/s)", "PacketLoss(%)", "Handshake(s)", "ConnDuration(s)",
+    })
+    writer.Flush()
+
+    return &MetricsLogger{
+        startTime:     time.Now(),
+        handshakeTime: handshakeTime,
+        writer:        writer,
+        file:          file,
+        tickerStop:    make(chan struct{}),
+    }
+}
+
+func (m *MetricsLogger) Start(connStart time.Time) {
+    log.Println("📈 MetricsLogger started")
+    m.connStart = connStart
+
+    go func() {
+        ticker := time.NewTicker(100 * time.Millisecond)
+        defer ticker.Stop()
+        for {
+            select {
+            case <-m.tickerStop:
+                return
+            case now := <-ticker.C:
+                m.lock.Lock()
+                elapsed := now.Sub(m.startTime)
+                connDuration := now.Sub(m.connStart)
+                cpuPerc, _ := cpu.Percent(0, false)
+                vm, _ := mem.VirtualMemory()
+
+                // Convert throughput to Megabits per second
+				throughputMB := float64(m.totalBytes) / 1_000_000.0 / elapsed.Seconds()
+
+                m.writer.Write([]string{
+                    fmt.Sprintf("%d", elapsed.Milliseconds()),
+                    fmt.Sprintf("%.2f", cpuPerc[0]),
+                    fmt.Sprintf("%.2f", float64(vm.Used)/1024.0/1024.0),
+                    fmt.Sprintf("%.2f", throughputMB),
+                    fmt.Sprintf("%.2f", 0.0), // TODO: real packet loss
+                    fmt.Sprintf("%.4f", m.handshakeTime.Seconds()),
+                    fmt.Sprintf("%.4f", connDuration.Seconds()+m.handshakeTime.Seconds()),
+                })
+                m.writer.Flush()
+                m.lock.Unlock()
+            }
+        }
+    }()
+}
+
+func (m *MetricsLogger) AddBytes(n int) {
+    m.lock.Lock()
+    m.totalBytes += int64(n)
+    m.lock.Unlock()
+}
+
+func (m *MetricsLogger) Stop() {
+    close(m.tickerStop)
+
+    m.lock.Lock()
+    defer m.lock.Unlock()
+
+    m.writer.Flush()
+    m.file.Close()
+    log.Println("🛑 MetricsLogger stopped and file closed.")
+}
+
+// LOGGING END
+
+
 
 var (
 	clientPrivateKey *rsa.PrivateKey
@@ -255,26 +355,75 @@ func runServer(tlsConfig *tls.Config) {
 }
 
 func handleTCPConnection(conn *tls.Conn) {
+	// Start handshake measurement
+    handshakeStart := time.Now()
+
 	defer conn.Close()
 	if err := conn.Handshake(); err != nil {
 		log.Println("TLS handshake error:", err)
 		return
 	}
-	handleConnWithVerify(conn)
+	state := conn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		log.Println("No client certificate found")
+		return
+	}
+	// End of handshake
+    handshakeTime := time.Since(handshakeStart)
+	connStart := time.Now()
+	var metrics *MetricsLogger
+	if *enableMetrics {
+		metrics = NewMetricsLogger(handshakeTime)
+		metrics.Start(connStart)
+		defer func() {
+			metrics.Stop()
+		}()
+	}
+
+	handleConnWithVerify(conn, metrics) // only does the logic
+	log.Println("🛑 TCP connection handler finished")
 }
 
+
 func handleQUICSession(sess quic.Connection) {
+
 	for {
 		stream, err := sess.AcceptStream(context.Background())
 		if err != nil {
 			log.Println("Error accepting QUIC stream:", err)
 			return
 		}
-		go handleConnWithVerify(stream)
+		go handleQuicStreamWithVerify(stream, sess)
 	}
 }
 
-func handleConnWithVerify(rw io.ReadWriter) {
+func handleQuicStreamWithVerify(stream quic.Stream, sess quic.Connection) {
+	// Start handshake measurement
+    handshakeStart := time.Now()
+	defer stream.Close()
+	state := sess.ConnectionState().TLS
+	if len(state.PeerCertificates) == 0 {
+		log.Println("No client certificate found")
+		return
+	}
+
+	// End of handshake
+    handshakeTime := time.Since(handshakeStart)
+	connStart := time.Now()
+	var metrics *MetricsLogger
+	if *enableMetrics {
+		metrics = NewMetricsLogger(handshakeTime)
+		metrics.Start(connStart)
+		defer func() {
+			metrics.Stop()
+		}()
+	}
+
+	handleConnWithVerify(stream, metrics) // only does the logic
+	log.Println("🛑 QUIC connection handler finished")
+}
+
+func handleConnWithVerify(rw io.ReadWriter, metrics *MetricsLogger) {
 	log.Println("🔌 Connection handler entered")
 
 	var dataLen uint32
@@ -284,7 +433,7 @@ func handleConnWithVerify(rw io.ReadWriter) {
 	}
 	log.Println("📏 Declared data length:", dataLen)
 
-	data, err := readFullInChunks(rw, int(dataLen))
+	data, err := readFullInChunksWithMetrics(rw, int(dataLen), metrics)
 	if err != nil {
 		log.Printf("❌ Failed to read full data (%d/%d): %v", len(data), dataLen, err)
 		return
@@ -298,7 +447,7 @@ func handleConnWithVerify(rw io.ReadWriter) {
 	}
 	log.Println("🔐 Declared signature length:", sigLen)
 
-	signature, err := readFullInChunks(rw, int(sigLen))
+	signature, err := readFullInChunksWithMetrics(rw, int(sigLen), metrics)
 	if err != nil {
 		log.Printf("❌ Failed to read full signature (%d/%d): %v", len(signature), sigLen, err)
 		return
@@ -402,21 +551,22 @@ func sendSignedData(w io.Writer, data []byte, sig []byte) {
 }
 
 
-func readFullInChunks(r io.Reader, totalLen int) ([]byte, error) {
-	buf := make([]byte, 0, totalLen)
-	chunk := make([]byte, 64*1024)
-	for len(buf) < totalLen {
-		toRead := min(len(chunk), totalLen-len(buf))
-		n, err := r.Read(chunk[:toRead])
-		if n > 0 {
-			buf = append(buf, chunk[:n]...)
-		}
-		if err != nil {
-			return buf, err
-		}
-	}
-	return buf, nil
+func readFullInChunksWithMetrics(r io.Reader, total int, metrics *MetricsLogger) ([]byte, error) {
+    buf := make([]byte, total)
+    var read int
+    for read < total {
+        n, err := r.Read(buf[read:])
+        if n > 0 && metrics != nil {
+            metrics.AddBytes(n)
+        }
+        if err != nil {
+            return buf[:read], err
+        }
+        read += n
+    }
+    return buf, nil
 }
+
 
 func min(a, b int) int {
 	if a < b {
