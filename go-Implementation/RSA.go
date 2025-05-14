@@ -377,13 +377,7 @@ func readFullInChunksWithMetrics(r io.Reader, total int, metrics *MetricsLogger)
 
 
 func handleConnWithVerify(rw io.ReadWriter, pubKey *rsa.PublicKey, metrics *MetricsLogger) {
-    defer func() {
-		if r := recover(); r != nil {
-			log.Printf("🔥 Panic recovered: %v", r)
-		}
-	}()
-	
-	log.Println("🔌 Connection handler entered")
+    log.Println("🔌 Connection handler entered")
 
     var dataLen uint32
 
