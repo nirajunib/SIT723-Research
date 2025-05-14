@@ -275,37 +275,43 @@ func handleQUICSession(sess quic.Connection) {
 }
 
 func handleConnWithVerify(rw io.ReadWriter) {
+	log.Println("🔌 Connection handler entered")
+
 	var dataLen uint32
 	if err := binary.Read(rw, binary.BigEndian, &dataLen); err != nil {
-		log.Println("Failed to read data length:", err)
+		log.Println("❌ Failed to read data length:", err)
 		return
 	}
 	log.Println("📏 Declared data length:", dataLen)
+
 	data, err := readFullInChunks(rw, int(dataLen))
 	if err != nil {
-		log.Println("Failed to read data:", err)
+		log.Printf("❌ Failed to read full data (%d/%d): %v", len(data), dataLen, err)
 		return
 	}
 	log.Printf("📦 Received %d bytes of data", len(data))
+
 	var sigLen uint32
 	if err := binary.Read(rw, binary.BigEndian, &sigLen); err != nil {
-		log.Println("Failed to read sig length:", err)
+		log.Println("❌ Failed to read signature length:", err)
 		return
 	}
 	log.Println("🔐 Declared signature length:", sigLen)
-	sig, err := readFullInChunks(rw, int(sigLen))
+
+	signature, err := readFullInChunks(rw, int(sigLen))
 	if err != nil {
-		log.Println("Failed to read sig:", err)
+		log.Printf("❌ Failed to read full signature (%d/%d): %v", len(signature), sigLen, err)
 		return
 	}
-	log.Printf("📝 Received %d bytes of signature", len(sig))
-	if ok := clientMLPublic.Scheme().Verify(clientMLPublic, data, sig, nil); !ok {
+	log.Printf("📝 Received %d bytes of signature", len(signature))
+
+	// Verify signature
+	if ok := clientMLPublic.Scheme().Verify(clientMLPublic, data, signature, nil); !ok {
 		log.Println("❌ Signature verification failed")
 	} else {
 		log.Println("✅ Signature verified successfully")
 		log.Printf("🔍 First 16 bytes of data: %x", data[:min(16, len(data))])
 	}
-	
 }
 
 func runClient(tlsConfig *tls.Config) {
@@ -338,14 +344,61 @@ func runClient(tlsConfig *tls.Config) {
 }
 
 func sendSignedData(w io.Writer, data []byte, sig []byte) {
-	
-	_ = binary.Write(w, binary.BigEndian, uint32(len(data)))
-	w.Write(data)
-	_ = binary.Write(w, binary.BigEndian, uint32(len(sig)))
-	w.Write(sig)
+	start := time.Now()
+
+	// Send data length
+	if err := binary.Write(w, binary.BigEndian, uint32(len(data))); err != nil {
+		log.Println("❌ Failed to write data length:", err)
+		return
+	}
+
+	// Send data in chunks
+	for offset := 0; offset < len(data); {
+		end := offset + *chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		n, err := w.Write(data[offset:end])
+		if err != nil {
+			log.Printf("❌ Chunk write failed at %d-%d: %v", offset, end, err)
+			return
+		}
+		offset += n
+	}
+
+	// Send signature length
+	if err := binary.Write(w, binary.BigEndian, uint32(len(sig))); err != nil {
+		log.Println("❌ Failed to write signature length:", err)
+		return
+	}
+
+	// Send signature
+	if _, err := w.Write(sig); err != nil {
+		log.Println("❌ Failed to write signature:", err)
+		return
+	}
+
+	// Flush for QUIC
+	if flusher, ok := w.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			log.Println("❌ Flush failed:", err)
+		}
+	}
+
+	// Delay before close for QUIC
+	if stream, ok := w.(quic.Stream); ok {
+		_ = stream.SetWriteDeadline(time.Now().Add(500 * time.Millisecond)) // allow time to flush
+	}
+
+	// Explicit Close
 	if closer, ok := w.(io.Closer); ok {
+		log.Println("🚪 Closing writer after sending")
+		time.Sleep(1000 * time.Millisecond) // Give time for flush
 		_ = closer.Close()
 	}
+
+	elapsed := time.Since(start).Seconds()
+	log.Printf("✅ Sent %d bytes + %dB signature in %.2fs (%.2f MB/s)", len(data), len(sig), elapsed, float64(len(data))/(1024*1024)/elapsed)
 }
 
 
