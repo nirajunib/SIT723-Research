@@ -1,43 +1,96 @@
 package main
 
 import (
-	"crypto"
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"os"
 	"time"
-	"encoding/binary"
 
+	"github.com/cloudflare/circl/sign"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/quic-go/quic-go"
-	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 )
 
 var (
-	mode      = flag.String("mode", "", "server or client")
-	protocol  = flag.String("protocol", "tcp", "tcp or quic")
-	addr      = flag.String("addr", "localhost:4444", "address to bind/connect")
-	chunkSize = flag.Int("chunk-size", 64*1024, "chunk size in bytes")
-	size      = flag.Int("size", 1024*1024, "data size to send (client only)")
+	mode       = flag.String("mode", "", "server or client")
+	protocol   = flag.String("protocol", "tcp", "tcp or quic")
+	addr       = flag.String("addr", "localhost:4444", "address to bind/connect")
+	chunkSize  = flag.Int("chunk-size", 64*1024, "chunk size in bytes")
+	size       = flag.Int("size", 1024*1024, "data size to send (client only)")
 )
-
-
-var mldsaContext = []byte("data-transfer") // shared context for ML-DSA
-
 
 var (
-	clientPrivateKey *mldsa.PrivateKey
-	clientPublicKey  *mldsa.PublicKey
+	clientPrivateKey *rsa.PrivateKey
+	clientCert       tls.Certificate
+
+	scheme           = mldsa44.Scheme()
+	clientMLPrivate  sign.PrivateKey
+	clientMLPublic   sign.PublicKey
 )
+
+func initMLDSAKeys(privPath, pubPath string) (sign.PrivateKey, sign.PublicKey, error) {
+	// Try to load existing keys
+	privBytes, privErr := os.ReadFile(privPath)
+	pubBytes, pubErr := os.ReadFile(pubPath)
+
+	if privErr == nil && pubErr == nil {
+		// Initialize the private and public key objects
+		priv := new(mldsa44.PrivateKey)
+		pub := new(mldsa44.PublicKey)
+
+		// Unmarshal the private and public key data
+		if err := priv.UnmarshalBinary(privBytes); err != nil {
+			return nil, nil, fmt.Errorf("invalid private key: %w", err)
+		}
+		if err := pub.UnmarshalBinary(pubBytes); err != nil {
+			return nil, nil, fmt.Errorf("invalid public key: %w", err)
+		}
+
+		// Ensure the keys are bound to the correct scheme
+		pub.Scheme()  // Bind public key to its scheme
+		priv.Scheme() // Bind private key to its scheme
+
+		// Return the loaded keys
+		return priv, pub, nil
+	}
+
+	// If keys don't exist, generate new ones
+	pub, priv, err := mldsa44.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("key generation failed: %w", err)
+	}
+
+	// Save the new keys to the specified paths
+	if err := os.WriteFile(privPath, priv.Bytes(), 0600); err != nil {
+		return nil, nil, fmt.Errorf("failed to write private key: %w", err)
+	}
+	if err := os.WriteFile(pubPath, pub.Bytes(), 0644); err != nil {
+		return nil, nil, fmt.Errorf("failed to write public key: %w", err)
+	}
+
+	// Ensure the keys are bound to the correct scheme after generation
+	pub.Scheme()  // Bind public key to its scheme
+	priv.Scheme() // Bind private key to its scheme
+
+	// Return the generated keys
+	return priv, pub, nil
+}
+
+
+
 
 func main() {
 	flag.Parse()
@@ -47,39 +100,33 @@ func main() {
 	if err := ensureCertificates(); err != nil {
 		log.Fatalf("Certificate generation error: %v", err)
 	}
-	if err := ensureMLDSAKeys(); err != nil {
-		log.Fatalf("ML-DSA key generation error: %v", err)
-	}
-	if err := loadMLDSAKeys(); err != nil {
-		log.Fatalf("Failed to load ML-DSA keys: %v", err)
-	}
+
+
+	var err error
+		clientMLPrivate, clientMLPublic, err = initMLDSAKeys("client_mldsa_priv.key", "client_mldsa_pub.key")
+		if err != nil {
+			log.Fatalf("ML-DSA key init failed: %v", err)
+		}
+	// if *mode == "client" {
+	// 	// var err error
+	// 	// clientMLPublic, clientMLPrivate, err = mldsa44.GenerateKey(rand.Reader)
+	// 	// initMLDSAKeys("ml_private.key", "ml_public.key")
+	// 	// if err != nil {
+	// 	// 	log.Fatalf("Failed to generate ML-DSA key: %v", err)
+	// 	// }
+	// 	var err error
+	// 	clientMLPrivate, clientMLPublic, err = initMLDSAKeys("client_mldsa_priv.key", "client_mldsa_pub.key")
+	// 	if err != nil {
+	// 		log.Fatalf("ML-DSA key init failed: %v", err)
+	// 	}
+
+	// }
 	tlsConfig := loadTLSConfig()
 	if *mode == "server" {
 		runServer(tlsConfig)
 	} else {
 		runClient(tlsConfig)
 	}
-}
-
-func writePemFile(filename, blockType string, data []byte) error {
-	f, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: blockType, Bytes: data})
-}
-
-func readPemFile(filename string) ([]byte, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, errors.New("invalid PEM file: " + filename)
-	}
-	return block.Bytes, nil
 }
 
 func ensureCertificates() error {
@@ -90,24 +137,25 @@ func ensureCertificates() error {
 }
 
 func generateCertificates() error {
-	log.Println("Generating RSA TLS certificates...")
+	log.Println("Generating TLS certificates...")
+
 	caKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	caTemplate := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{Organization: []string{"My CA"}},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
-		IsCA:         true,
-		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SerialNumber:          big.NewInt(2025),
+		Subject:               pkix.Name{Organization: []string{"My CA"}},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 	}
 	caCertDER, _ := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caKey.PublicKey, caKey)
-	writePemFile("ca.pem", "CERTIFICATE", caCertDER)
-	writePemFile("ca-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(caKey))
+	writePem("ca.pem", "CERTIFICATE", caCertDER)
+	writePem("ca-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(caKey))
 
 	serverKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	serverTemplate := x509.Certificate{
-		SerialNumber: big.NewInt(2),
+		SerialNumber: big.NewInt(2026),
 		Subject:      pkix.Name{CommonName: "localhost"},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
@@ -116,12 +164,12 @@ func generateCertificates() error {
 	}
 	caCert, _ := x509.ParseCertificate(caCertDER)
 	serverCertDER, _ := x509.CreateCertificate(rand.Reader, &serverTemplate, caCert, &serverKey.PublicKey, caKey)
-	writePemFile("server.pem", "CERTIFICATE", serverCertDER)
-	writePemFile("server-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(serverKey))
+	writePem("server.pem", "CERTIFICATE", serverCertDER)
+	writePem("server-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(serverKey))
 
 	clientKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	clientTemplate := x509.Certificate{
-		SerialNumber: big.NewInt(3),
+		SerialNumber: big.NewInt(2027),
 		Subject:      pkix.Name{CommonName: "client"},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
@@ -129,45 +177,17 @@ func generateCertificates() error {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
 	clientCertDER, _ := x509.CreateCertificate(rand.Reader, &clientTemplate, caCert, &clientKey.PublicKey, caKey)
-	writePemFile("client.pem", "CERTIFICATE", clientCertDER)
-	writePemFile("client-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(clientKey))
+	writePem("client.pem", "CERTIFICATE", clientCertDER)
+	writePem("client-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(clientKey))
+
 	log.Println("Certificates generated successfully.")
 	return nil
 }
 
-func ensureMLDSAKeys() error {
-	if _, err := os.Stat("mldsa-sk.pem"); errors.Is(err, os.ErrNotExist) {
-		pk, sk, err := mldsa.GenerateKey(rand.Reader)
-		if err != nil {
-			return err
-		}
-		writePemFile("mldsa-sk.pem", "MLDSA PRIVATE KEY", sk.Bytes())
-		writePemFile("mldsa-pk.pem", "MLDSA PUBLIC KEY", pk.Bytes())
-	}
-	return nil
-}
-
-func loadMLDSAKeys() error {
-	skBytes, err := readPemFile("mldsa-sk.pem")
-	if err != nil {
-		return err
-	}
-	sk := new(mldsa.PrivateKey)
-	if err := sk.UnmarshalBinary(skBytes); err != nil {
-		return err
-	}
-	clientPrivateKey = sk
-
-	pkBytes, err := readPemFile("mldsa-pk.pem")
-	if err != nil {
-		return err
-	}
-	pk := new(mldsa.PublicKey)
-	if err := pk.UnmarshalBinary(pkBytes); err != nil {
-		return err
-	}
-	clientPublicKey = pk
-	return nil
+func writePem(filename, blockType string, bytes []byte) {
+	f, _ := os.Create(filename)
+	defer f.Close()
+	pem.Encode(f, &pem.Block{Type: blockType, Bytes: bytes})
 }
 
 func loadTLSConfig() *tls.Config {
@@ -179,6 +199,7 @@ func loadTLSConfig() *tls.Config {
 		caCert, _ := os.ReadFile("ca.pem")
 		pool := x509.NewCertPool()
 		pool.AppendCertsFromPEM(caCert)
+
 		return &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			ClientCAs:    pool,
@@ -191,6 +212,9 @@ func loadTLSConfig() *tls.Config {
 	if err != nil {
 		log.Fatal("Client cert load error:", err)
 	}
+	clientCert = cert
+	clientPrivateKey = cert.PrivateKey.(*rsa.PrivateKey)
+
 	return &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true,
@@ -213,7 +237,7 @@ func runServer(tlsConfig *tls.Config) {
 			}
 			go handleTCPConnection(conn.(*tls.Conn))
 		}
-	} else if *protocol == "quic" {
+	} else {
 		ln, err := quic.ListenAddr(*addr, tlsConfig, nil)
 		if err != nil {
 			log.Fatal(err)
@@ -230,6 +254,15 @@ func runServer(tlsConfig *tls.Config) {
 	}
 }
 
+func handleTCPConnection(conn *tls.Conn) {
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		log.Println("TLS handshake error:", err)
+		return
+	}
+	handleConnWithVerify(conn)
+}
+
 func handleQUICSession(sess quic.Connection) {
 	for {
 		stream, err := sess.AcceptStream(context.Background())
@@ -241,64 +274,38 @@ func handleQUICSession(sess quic.Connection) {
 	}
 }
 
-func handleTCPConnection(conn *tls.Conn) {
-	defer conn.Close()
-	if err := conn.Handshake(); err != nil {
-		log.Println("TLS handshake error:", err)
-		return
-	}
-	handleConnWithVerify(conn)
-}
-
 func handleConnWithVerify(rw io.ReadWriter) {
-	log.Println("🔌 Connection handler entered")
-
 	var dataLen uint32
 	if err := binary.Read(rw, binary.BigEndian, &dataLen); err != nil {
-		log.Println("❌ Failed to read data length:", err)
+		log.Println("Failed to read data length:", err)
 		return
 	}
+	log.Println("📏 Declared data length:", dataLen)
 	data, err := readFullInChunks(rw, int(dataLen))
 	if err != nil {
-		log.Printf("❌ Failed to read data: %v", err)
+		log.Println("Failed to read data:", err)
 		return
 	}
-
+	log.Printf("📦 Received %d bytes of data", len(data))
 	var sigLen uint32
 	if err := binary.Read(rw, binary.BigEndian, &sigLen); err != nil {
-		log.Println("❌ Failed to read signature length:", err)
+		log.Println("Failed to read sig length:", err)
 		return
 	}
-	signature, err := readFullInChunks(rw, int(sigLen))
+	log.Println("🔐 Declared signature length:", sigLen)
+	sig, err := readFullInChunks(rw, int(sigLen))
 	if err != nil {
-		log.Printf("❌ Failed to read signature: %v", err)
+		log.Println("Failed to read sig:", err)
 		return
 	}
-
-	var pkLen uint32
-	if err := binary.Read(rw, binary.BigEndian, &pkLen); err != nil {
-		log.Println("❌ Failed to read public key length:", err)
-		return
-	}
-	pkBytes := make([]byte, pkLen)
-	if _, err := io.ReadFull(rw, pkBytes); err != nil {
-		log.Println("❌ Failed to read public key:", err)
-		return
-	}
-	pk := new(mldsa.PublicKey)
-	if err := pk.UnmarshalBinary(pkBytes); err != nil {
-		log.Println("❌ Invalid ML-DSA public key:", err)
-		return
-	}
-
-	// if !mldsa.Verify(pk, []byte(""), data, signature) {
-	if !mldsa.Verify(pk, mldsaContext, data, signature) {
-
+	log.Printf("📝 Received %d bytes of signature", len(sig))
+	if ok := clientMLPublic.Scheme().Verify(clientMLPublic, data, sig, nil); !ok {
 		log.Println("❌ Signature verification failed")
 	} else {
 		log.Println("✅ Signature verified successfully")
 		log.Printf("🔍 First 16 bytes of data: %x", data[:min(16, len(data))])
 	}
+	
 }
 
 func runClient(tlsConfig *tls.Config) {
@@ -306,21 +313,17 @@ func runClient(tlsConfig *tls.Config) {
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	// signature, err := clientPrivateKey.Sign(rand.Reader, data, crypto.Hash(0))
-	signature, err := clientPrivateKey.Sign(rand.Reader, data, crypto.Hash(0))
-
-
+	sig, err := clientMLPrivate.Sign(rand.Reader, data, crypto.Hash(0))
 	if err != nil {
-		log.Fatal("Sign error:", err)
+		log.Fatal("Private signature:", err)
 	}
-	pkBytes := clientPublicKey.Bytes()
 
 	if *protocol == "tcp" {
 		conn, err := tls.Dial("tcp", *addr, tlsConfig)
 		if err != nil {
 			log.Fatal("Dial error:", err)
 		}
-		sendSignedData(conn, data, signature, pkBytes)
+		sendSignedData(conn, data, sig)
 	} else {
 		sess, err := quic.DialAddr(context.Background(), *addr, tlsConfig, nil)
 		if err != nil {
@@ -330,28 +333,25 @@ func runClient(tlsConfig *tls.Config) {
 		if err != nil {
 			log.Fatal("Open stream error:", err)
 		}
-		sendSignedData(stream, data, signature, pkBytes)
+		sendSignedData(stream, data, sig)
 	}
 }
 
-func sendSignedData(w io.Writer, data, sig, pk []byte) {
-	start := time.Now()
-	binary.Write(w, binary.BigEndian, uint32(len(data)))
+func sendSignedData(w io.Writer, data []byte, sig []byte) {
+	
+	_ = binary.Write(w, binary.BigEndian, uint32(len(data)))
 	w.Write(data)
-	binary.Write(w, binary.BigEndian, uint32(len(sig)))
+	_ = binary.Write(w, binary.BigEndian, uint32(len(sig)))
 	w.Write(sig)
-	binary.Write(w, binary.BigEndian, uint32(len(pk)))
-	w.Write(pk)
 	if closer, ok := w.(io.Closer); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
-	elapsed := time.Since(start).Seconds()
-	log.Printf("✅ Sent %d bytes + %dB signature in %.2fs (%.2f MB/s)", len(data), len(sig), elapsed, float64(len(data))/(1024*1024)/elapsed)
 }
+
 
 func readFullInChunks(r io.Reader, totalLen int) ([]byte, error) {
 	buf := make([]byte, 0, totalLen)
-	chunk := make([]byte, *chunkSize)
+	chunk := make([]byte, 64*1024)
 	for len(buf) < totalLen {
 		toRead := min(len(chunk), totalLen-len(buf))
 		n, err := r.Read(chunk[:toRead])
