@@ -14,6 +14,13 @@ sns.set(style="whitegrid")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def format_scheme_label(scheme):
+    label = scheme.replace('-logs', '').upper()
+    if label == 'MLDSA':
+        return 'ML-DSA'
+    return label
+
+
 def collect_csvs(role, scheme, protocol):
     folder = os.path.join(BASE_DIR, role, scheme, role, protocol)
     files = glob(os.path.join(folder, 'metrics-*.csv'))
@@ -68,7 +75,7 @@ def plot_time_series_server(data, protocol):
             df = data[scheme]
             if metric in df.columns:
                 ax.plot(df['Elapsed(s)'], df[metric],
-                        label=scheme.replace('-logs', '').upper())
+                        label=format_scheme_label(scheme))
         ax.set_title(f'{metric} over Time - {protocol.upper()}')
         ax.set_xlabel('Elapsed Time (s)')
         ax.set_ylabel(metric)
@@ -87,7 +94,7 @@ def plot_box_server(data, protocol):
     df_combined = []
     for scheme in SCHEMES:
         df = data[scheme].copy()
-        df['Scheme'] = scheme.replace('-logs', '').upper()
+        df['Scheme'] = format_scheme_label(scheme)
         df_combined.append(df)
     df_all = pd.concat(df_combined)
 
@@ -147,7 +154,7 @@ def plot_box_client(data, protocol):
         if 'TTC(ms)' in df.columns:
             df['TTC(s)'] = df['TTC(ms)'] / 1000
             df.drop(columns=['TTC(ms)'], inplace=True)
-        df['Scheme'] = scheme.replace('-logs', '').upper()
+        df['Scheme'] = format_scheme_label(scheme)
         df_combined.append(df)
 
     df_all = pd.concat(df_combined)
@@ -192,7 +199,7 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
     lines.append(
         f"This report summarizes key statistical findings and interpretations "
         f"for server and client network metrics collected under the **{protocol.upper()}** protocol. "
-        f"The data compares RSA and MLDSA cryptographic schemes, each evaluated over 50 trials. "
+        f"The data compares RSA and ML-DSA cryptographic schemes, each evaluated over 50 trials. "
         f"Metrics are analyzed to reveal performance, resource utilization, latency, and throughput behavior.\n"
     )
 
@@ -238,26 +245,26 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
 
         lines.append(f"### Metric: `{metric}`")
         lines.append(
-            f"- **Number of samples:** RSA = {rsa_count}, MLDSA = {mldsa_count}")
+            f"- **Number of samples:** RSA = {rsa_count}, ML-DSA = {mldsa_count}")
         lines.append(
-            f"- **Mean:** RSA = {rsa_mean:.3f}, MLDSA = {mldsa_mean:.3f}")
+            f"- **Mean:** RSA = {rsa_mean:.3f}, ML-DSA = {mldsa_mean:.3f}")
         lines.append(
-            f"- **Median:** RSA = {rsa_median:.3f}, MLDSA = {mldsa_median:.3f}")
+            f"- **Median:** RSA = {rsa_median:.3f}, ML-DSA = {mldsa_median:.3f}")
         lines.append(
-            f"- **Standard Deviation:** RSA = {rsa_std:.3f}, MLDSA = {mldsa_std:.3f}")
+            f"- **Standard Deviation:** RSA = {rsa_std:.3f}, ML-DSA = {mldsa_std:.3f}")
         lines.append(
-            f"- **Interquartile Range (IQR):** RSA = {rsa_iqr:.3f}, MLDSA = {mldsa_iqr:.3f}")
+            f"- **Interquartile Range (IQR):** RSA = {rsa_iqr:.3f}, ML-DSA = {mldsa_iqr:.3f}")
         lines.append(
-            f"- **Number of outliers:** RSA = {rsa_outliers}, MLDSA = {mldsa_outliers}\n")
+            f"- **Number of outliers:** RSA = {rsa_outliers}, ML-DSA = {mldsa_outliers}\n")
 
         median_diff = mldsa_median - rsa_median
 
         lines.append("#### Interpretation:")
         if abs(median_diff) < 0.05 * max(abs(rsa_median), abs(mldsa_median)):
             lines.append(
-                "- Median values are similar between RSA and MLDSA, indicating comparable typical performance.")
+                "- Median values are similar between RSA and ML-DSA, indicating comparable typical performance.")
         else:
-            better = "RSA" if median_diff > 0 else "MLDSA"
+            better = "RSA" if median_diff > 0 else "ML-DSA"
             lines.append(
                 f"- Median difference of {abs(median_diff):.3f} suggests **{better}** achieves better typical `{metric.lower()}`."
             )
@@ -267,7 +274,7 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
                 "- RSA exhibits higher variability, suggesting less stable performance.")
         else:
             lines.append(
-                "- MLDSA exhibits higher variability, suggesting less stable performance.")
+                "- ML-DSA exhibits higher variability, suggesting less stable performance.")
 
         # Specific metric technical notes
         if metric == 'CPU(%)':
@@ -328,17 +335,17 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
 
         lines.append(f"### Metric: `{metric_label}`")
         lines.append(
-            f"- **Number of samples:** RSA = {rsa_count}, MLDSA = {mldsa_count}")
+            f"- **Number of samples:** RSA = {rsa_count}, ML-DSA = {mldsa_count}")
         lines.append(
-            f"- **Mean:** RSA = {rsa_mean:.3f}, MLDSA = {mldsa_mean:.3f}")
+            f"- **Mean:** RSA = {rsa_mean:.3f}, ML-DSA = {mldsa_mean:.3f}")
         lines.append(
-            f"- **Median:** RSA = {rsa_median:.3f}, MLDSA = {mldsa_median:.3f}")
+            f"- **Median:** RSA = {rsa_median:.3f}, ML-DSA = {mldsa_median:.3f}")
         lines.append(
-            f"- **Standard Deviation:** RSA = {rsa_std:.3f}, MLDSA = {mldsa_std:.3f}")
+            f"- **Standard Deviation:** RSA = {rsa_std:.3f}, ML-DSA = {mldsa_std:.3f}")
         lines.append(
-            f"- **Interquartile Range (IQR):** RSA = {rsa_iqr:.3f}, MLDSA = {mldsa_iqr:.3f}")
+            f"- **Interquartile Range (IQR):** RSA = {rsa_iqr:.3f}, ML-DSA = {mldsa_iqr:.3f}")
         lines.append(
-            f"- **Number of outliers:** RSA = {rsa_outliers}, MLDSA = {mldsa_outliers}\n")
+            f"- **Number of outliers:** RSA = {rsa_outliers}, ML-DSA = {mldsa_outliers}\n")
 
         median_diff = mldsa_median - rsa_median
 
@@ -347,7 +354,7 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
             lines.append(
                 "- Median values are similar, indicating comparable client-side latency or timing.")
         else:
-            better = "RSA" if median_diff > 0 else "MLDSA"
+            better = "RSA" if median_diff > 0 else "ML-DSA"
             lines.append(
                 f"- Median difference of {abs(median_diff):.3f} indicates **{better}** has a performance advantage in this metric."
             )
@@ -357,7 +364,7 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
                 "- RSA shows higher variability, possibly less consistent client experience.")
         else:
             lines.append(
-                "- MLDSA shows higher variability, indicating potential inconsistency.")
+                "- ML-DSA shows higher variability, indicating potential inconsistency.")
 
         # Specific explanations per metric
         if metric == 'Handshake(ms)':
@@ -409,20 +416,20 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
             lines.append(
                 f"- RSA average peak: {rsa_peak:.2f}, standard deviation over time: {rsa_std_trend:.2f}")
             lines.append(
-                f"- MLDSA average peak: {mldsa_peak:.2f}, standard deviation over time: {mldsa_std_trend:.2f}")
+                f"- ML-DSA average peak: {mldsa_peak:.2f}, standard deviation over time: {mldsa_std_trend:.2f}")
 
             if rsa_peak > mldsa_peak:
                 lines.append(
                     "- RSA experiences higher CPU/throughput peaks, possibly indicating bursts of higher load or processing.")
             else:
                 lines.append(
-                    "- MLDSA experiences higher CPU/throughput peaks.")
+                    "- ML-DSA experiences higher CPU/throughput peaks.")
 
             if rsa_std_trend > mldsa_std_trend:
                 lines.append(
                     "- RSA shows more variability over time, suggesting less consistent resource usage.")
             else:
-                lines.append("- MLDSA shows more variability over time.")
+                lines.append("- ML-DSA shows more variability over time.")
 
             lines.append("")
     except Exception as e:
@@ -432,7 +439,7 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
     lines.append("---\n")
     lines.append("## Overall Summary\n")
     lines.append(
-        "The comparative analysis reveals nuanced differences between RSA and MLDSA cryptographic "
+        "The comparative analysis reveals nuanced differences between RSA and ML-DSA cryptographic "
         f"schemes on the tested protocol (**{protocol.upper()}**). Metrics such as CPU utilization, memory footprint, "
         "throughput, latency, and connection times demonstrate how each approach impacts performance.\n\n"
 
