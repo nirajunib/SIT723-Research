@@ -2,7 +2,7 @@
 
 This repository contains a collection of scripts and output files used to benchmark and analyze implementation of RSA vs ML-DSA in TCP and QUIC. The project was conducted as part of a research linked below.
 
-> **Note:** The final and most up-to-date version of the code used in the research report is located in the `TLSScriptsWithBenchmark/` directory.
+> **Note:** The final and most up-to-date version of the code used in the research report is located in the `Final-Implementation-GO//` directory.
 
 ---
 
@@ -10,10 +10,10 @@ This repository contains a collection of scripts and output files used to benchm
 
 The codebase used in the **final research report** is located in:
 
-TLSScriptsWithBenchmark/Scripts/
+`Final-Implementation-GO/`
 
 This version contains the most stable, cleaned, and benchmark-accurate scripts including:
-- RSA and Post-Quantum configurations
+- RSA and Post-Quantum configurations in Golang
 - TLS Implementation
 - Accurate Benchmarking
 
@@ -21,8 +21,8 @@ This version contains the most stable, cleaned, and benchmark-accurate scripts i
 
 ## Sample Output & Visualization
 
-- Raw client and server output logs are located in `Output-Client/Output/` and `Output-Server/Output/` respectively.
-- Benchmark plotting scripts can be found in `Plot/Plot/`, used to visualize discrepancies across various tests.
+- Raw client and server output logs are located in `Final-Implementation-GO/Output/`.
+- Benchmark plotting scripts can be found in `Final-Implementation-GO/Output/plot.py`, used to visualize discrepancies across various tests.
 
 ---
 
