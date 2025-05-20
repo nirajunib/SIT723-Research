@@ -76,10 +76,11 @@ def plot_time_series_server(data, protocol):
             if metric in df.columns:
                 ax.plot(df['Elapsed(s)'], df[metric],
                         label=format_scheme_label(scheme))
-        ax.set_title(f'{metric} over Time - {protocol.upper()}')
-        ax.set_xlabel('Elapsed Time (s)')
-        ax.set_ylabel(metric)
-        ax.legend()
+        ax.set_title(f'{metric} over Time - {protocol.upper()}', fontsize=16)
+        ax.set_xlabel('Elapsed Time (s)', fontsize=16)
+        ax.set_ylabel(metric, fontsize=16)
+        ax.tick_params(axis='both', labelsize=14)
+        ax.legend(fontsize=14)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'server_time_series_{protocol}.png'))
@@ -102,7 +103,11 @@ def plot_box_server(data, protocol):
         ax = axs[positions[idx]]
         if metric in df_all.columns:
             sns.boxplot(x='Scheme', y=metric, data=df_all, ax=ax)
-            ax.set_title(f'{metric} Distribution - {protocol.upper()}')
+            ax.set_title(
+                f'{metric} Distribution - {protocol.upper()}', fontsize=16)
+            ax.set_xlabel('Scheme', fontsize=16)
+            ax.set_ylabel(metric, fontsize=16)
+            ax.tick_params(axis='both', labelsize=14)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'server_boxplot_{protocol}.png'))
@@ -119,7 +124,6 @@ def plot_time_series_client(data, protocol):
         for scheme in SCHEMES:
             df = data[scheme].copy()
 
-            # Convert TTC(ms) explicitly to seconds here and adjust label/title
             if metric == 'TTC(ms)':
                 y = df[metric] / 1000
                 label = f'{scheme.replace("-logs", "").upper()}'
@@ -132,10 +136,12 @@ def plot_time_series_client(data, protocol):
                 title_metric = metric
 
             ax.plot(y.reset_index(drop=True), label=label)
-        ax.set_title(f'{title_metric} Time Series - {protocol.upper()}')
-        ax.set_xlabel('Trial')
-        ax.set_ylabel(ylabel)
-        ax.legend()
+        ax.set_title(
+            f'{title_metric} Time Series - {protocol.upper()}', fontsize=16)
+        ax.set_xlabel('Trial', fontsize=16)
+        ax.set_ylabel(ylabel, fontsize=16)
+        ax.tick_params(axis='both', labelsize=14)
+        ax.legend(fontsize=14)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'client_time_series_{protocol}.png'))
@@ -150,7 +156,6 @@ def plot_box_client(data, protocol):
     df_combined = []
     for scheme in SCHEMES:
         df = data[scheme].copy()
-        # Convert TTC(ms) explicitly here
         if 'TTC(ms)' in df.columns:
             df['TTC(s)'] = df['TTC(ms)'] / 1000
             df.drop(columns=['TTC(ms)'], inplace=True)
@@ -159,22 +164,23 @@ def plot_box_client(data, protocol):
 
     df_all = pd.concat(df_combined)
 
-    # Now plot using updated column names with TTC(s)
     plot_metrics = ['Handshake(ms)', 'Latency(ms)', 'RTT(ms)', 'TTC(s)']
 
     for idx, metric in enumerate(plot_metrics):
         ax = axs[positions[idx]]
         if metric in df_all.columns:
             ylabel = metric
-            # Adjust ylabel/title for TTC(s)
             title_metric = metric
             if metric == 'TTC(s)':
                 title_metric = 'TTC(s)'
                 ylabel = 'TTC (s)'
 
             sns.boxplot(x='Scheme', y=metric, data=df_all, ax=ax)
-            ax.set_title(f'{title_metric} Distribution - {protocol.upper()}')
-            ax.set_ylabel(ylabel)
+            ax.set_title(
+                f'{title_metric} Distribution - {protocol.upper()}', fontsize=16)
+            ax.set_xlabel('Scheme', fontsize=16)
+            ax.set_ylabel(ylabel, fontsize=16)
+            ax.tick_params(axis='both', labelsize=14)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'client_boxplot_{protocol}.png'))
