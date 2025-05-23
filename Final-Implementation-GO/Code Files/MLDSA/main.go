@@ -380,6 +380,8 @@ func loadTLSConfig() *tls.Config {
 			ClientCAs:    pool,
 			ClientAuth:   tls.RequireAndVerifyClientCert,
 			NextProtos:   []string{"quic-test"},
+			// CurvePreferences left nil to enable X25519Kyber768 by default, run with GODEBUG=tlsmlkem=1 go run
+			// https://tip.golang.org/doc/go1.24
 		}
 	}
 
@@ -394,8 +396,11 @@ func loadTLSConfig() *tls.Config {
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"quic-test"},
+			// CurvePreferences left nil to enable X25519Kyber768 by default, run with GODEBUG=tlsmlkem=1 go run
+		// https://tip.golang.org/doc/go1.24
 	}
 }
+
 
 func runServer(tlsConfig *tls.Config) {
 	if *protocol == "tcp" {
@@ -432,6 +437,7 @@ func runServer(tlsConfig *tls.Config) {
 func handleTCPConnection(conn *tls.Conn) {
 	// Start handshake measurement
     // handshakeStart := time.Now()
+	
 
 	defer conn.Close()
 	if err := conn.Handshake(); err != nil {
