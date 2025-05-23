@@ -103,7 +103,7 @@ func (m *MetricsLogger) Start(connStart time.Time) {
 				throughputMB := float64(m.totalBytes) / 1_000_000.0 / elapsed.Seconds()
 
                 m.writer.Write([]string{
-                    fmt.Sprintf("%.4f", elapsed.Milliseconds()),
+                    fmt.Sprintf("%d", elapsed.Milliseconds()),
                     fmt.Sprintf("%.4f", cpuPerc[0]),
                     fmt.Sprintf("%.4f", float64(vm.Used)/1024.0/1024.0),
                     fmt.Sprintf("%.4f", throughputMB),
