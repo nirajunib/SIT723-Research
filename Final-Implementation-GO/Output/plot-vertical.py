@@ -9,16 +9,30 @@ BASE_DIR = 'Benchmark'
 OUTPUT_DIR = 'plots'
 PROTOCOLS = ['tcp', 'quic']
 SCHEMES = ['rsa-logs', 'mldsa-logs']
-sns.set(style="whitegrid")
+
+# Font and style constants
+FONT_FAMILY = 'sans-serif'
+FONT_NAME = 'Arial'
+TITLE_FONTSIZE = 20
+LABEL_FONTSIZE = 18
+TICK_FONTSIZE = 16
+LEGEND_FONTSIZE = 16
+
+plt.rcParams['font.family'] = FONT_FAMILY
+plt.rcParams['font.sans-serif'] = [FONT_NAME, 'DejaVu Sans', 'Liberation Sans']
+sns.set(style="whitegrid", font=FONT_FAMILY)
+
+COLOR_PALETTE = {
+    'RSA': '#1f77b4',
+    'ML-DSA': '#ff7f0e'
+}
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def format_scheme_label(scheme):
     label = scheme.replace('-logs', '').upper()
-    if label == 'MLDSA':
-        return 'ML-DSA'
-    return label
+    return 'ML-DSA' if label == 'MLDSA' else label
 
 
 def collect_csvs(role, scheme, protocol):
@@ -27,15 +41,27 @@ def collect_csvs(role, scheme, protocol):
     return sorted(files)
 
 
-def load_server_metrics(files):
+def load_server_metrics_avg_line(files, max_lines=200):
+    if not files:
+        return pd.DataFrame()
     dfs = []
     for f in files:
         try:
-            df = pd.read_csv(f)
+            df = pd.read_csv(f).head(max_lines)
             dfs.append(df)
         except Exception as e:
             print(f"Failed to read {f}: {e}")
-    return dfs
+    if not dfs:
+        return pd.DataFrame()
+    numeric_cols = dfs[0].select_dtypes(include='number').columns
+    avg_data = pd.DataFrame(index=range(max_lines))
+    for col in numeric_cols:
+        col_stack = pd.concat([df[col] for df in dfs], axis=1)
+        avg_data[col] = col_stack.mean(axis=1)
+    if 'Elapsed(ms)' not in avg_data.columns:
+        avg_data['Elapsed(ms)'] = avg_data.index
+    avg_data.dropna(how='all', inplace=True)
+    return avg_data.reset_index(drop=True)
 
 
 def load_client_metrics(files):
@@ -46,14 +72,7 @@ def load_client_metrics(files):
             dfs.append(df)
         except Exception as e:
             print(f"Failed to read {f}: {e}")
-    return pd.concat(dfs, ignore_index=True)
-
-
-def aggregate_server_time_series(dfs):
-    df_combined = pd.concat(dfs, axis=0)
-    df_combined = df_combined.groupby('Elapsed(ms)').mean().reset_index()
-    df_combined['Elapsed(s)'] = df_combined['Elapsed(ms)'] / 1000
-    return df_combined
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
 def convert_time_units(df, columns):
@@ -64,23 +83,33 @@ def convert_time_units(df, columns):
     return df
 
 
+def style_axis(ax, xlabel, ylabel):
+    ax.set_xlabel(xlabel, fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel(ylabel, fontsize=LABEL_FONTSIZE)
+    ax.tick_params(axis='both', labelsize=TICK_FONTSIZE)
+
+
 def plot_time_series_server(data, protocol):
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    metrics = ['CPU(%)', 'Memory(MB)', 'Throughput(MB/s)', 'ConnDuration(s)']
-    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    fig, axs = plt.subplots(3, 1, figsize=(8, 12))
+    metrics = ['CPU(%)', 'Memory(MB)', 'Throughput(MB/s)']
 
     for idx, metric in enumerate(metrics):
-        ax = axs[positions[idx]]
+        ax = axs[idx]
         for scheme in SCHEMES:
-            df = data[scheme]
-            if metric in df.columns:
-                ax.plot(df['Elapsed(s)'], df[metric],
-                        label=format_scheme_label(scheme))
-        ax.set_title(f'{metric} over Time - {protocol.upper()}', fontsize=16)
-        ax.set_xlabel('Elapsed Time (s)', fontsize=16)
-        ax.set_ylabel(metric, fontsize=16)
-        ax.tick_params(axis='both', labelsize=14)
-        ax.legend(fontsize=14)
+            df = data.get(scheme)
+            if df is None or df.empty:
+                continue
+            if metric in df.columns and 'Elapsed(ms)' in df.columns:
+                x_sec = df['Elapsed(ms)'] / 1000
+                label = format_scheme_label(scheme)
+                linestyle = '--' if label == 'ML-DSA' else '-'
+                ax.plot(x_sec, df[metric],
+                        label=label,
+                        linestyle=linestyle,
+                        color=COLOR_PALETTE[label])
+        style_axis(ax, 'Elapsed Time (s)', metric)
+        ax.set_xticks(range(0, int(x_sec.max()) + 2, 2))
+        ax.legend(fontsize=LEGEND_FONTSIZE)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'server_time_series_{protocol}.png'))
@@ -88,71 +117,36 @@ def plot_time_series_server(data, protocol):
 
 
 def plot_box_server(data, protocol):
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    metrics = ['CPU(%)', 'Memory(MB)', 'Throughput(MB/s)', 'ConnDuration(s)']
-    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-
+    fig, axs = plt.subplots(3, 1, figsize=(8, 12))
+    metrics = ['CPU(%)', 'Memory(MB)', 'Throughput(MB/s)']
     df_combined = []
     for scheme in SCHEMES:
-        df = data[scheme].copy()
-        df['Scheme'] = format_scheme_label(scheme)
-        df_combined.append(df)
+        df = data.get(scheme)
+        if df is None or df.empty:
+            continue
+        df_copy = df.copy()
+        df_copy['Scheme'] = format_scheme_label(scheme)
+        df_combined.append(df_copy)
+    if not df_combined:
+        print(f"No server data to plot for protocol {protocol}")
+        return
     df_all = pd.concat(df_combined)
 
     for idx, metric in enumerate(metrics):
-        ax = axs[positions[idx]]
+        ax = axs[idx]
         if metric in df_all.columns:
-            sns.boxplot(x='Scheme', y=metric, data=df_all, ax=ax)
-            ax.set_title(
-                f'{metric} Distribution - {protocol.upper()}', fontsize=16)
-            ax.set_xlabel('Scheme', fontsize=16)
-            ax.set_ylabel(metric, fontsize=16)
-            ax.tick_params(axis='both', labelsize=14)
+            sns.boxplot(x='Scheme', y=metric, data=df_all, ax=ax,
+                        width=0.4, palette=COLOR_PALETTE)
+            style_axis(ax, 'Scheme', metric)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'server_boxplot_{protocol}.png'))
     print(f'[✓] Saved: server_boxplot_{protocol}.png')
 
 
-def plot_time_series_client(data, protocol):
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    metrics = ['Handshake(ms)', 'Latency(ms)', 'RTT(ms)', 'TTC(ms)']
-    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-
-    for idx, metric in enumerate(metrics):
-        ax = axs[positions[idx]]
-        for scheme in SCHEMES:
-            df = data[scheme].copy()
-
-            if metric == 'TTC(ms)':
-                y = df[metric] / 1000
-                label = f'{scheme.replace("-logs", "").upper()}'
-                ylabel = metric.replace('(ms)', '(s)')
-                title_metric = 'TTC(s)'
-            else:
-                y = df[metric]
-                label = scheme.replace("-logs", "").upper()
-                ylabel = metric
-                title_metric = metric
-
-            ax.plot(y.reset_index(drop=True), label=label)
-        ax.set_title(
-            f'{title_metric} Time Series - {protocol.upper()}', fontsize=16)
-        ax.set_xlabel('Trial', fontsize=16)
-        ax.set_ylabel(ylabel, fontsize=16)
-        ax.tick_params(axis='both', labelsize=14)
-        ax.legend(fontsize=14)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, f'client_time_series_{protocol}.png'))
-    print(f'[✓] Saved: client_time_series_{protocol}.png')
-
-
 def plot_box_client(data, protocol):
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axs = plt.subplots(4, 1, figsize=(8, 16))
     metrics = ['Handshake(ms)', 'Latency(ms)', 'RTT(ms)', 'TTC(ms)']
-    positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-
     df_combined = []
     for scheme in SCHEMES:
         df = data[scheme].copy()
@@ -161,26 +155,15 @@ def plot_box_client(data, protocol):
             df.drop(columns=['TTC(ms)'], inplace=True)
         df['Scheme'] = format_scheme_label(scheme)
         df_combined.append(df)
-
     df_all = pd.concat(df_combined)
 
     plot_metrics = ['Handshake(ms)', 'Latency(ms)', 'RTT(ms)', 'TTC(s)']
-
     for idx, metric in enumerate(plot_metrics):
-        ax = axs[positions[idx]]
+        ax = axs[idx]
         if metric in df_all.columns:
-            ylabel = metric
-            title_metric = metric
-            if metric == 'TTC(s)':
-                title_metric = 'TTC(s)'
-                ylabel = 'TTC (s)'
-
-            sns.boxplot(x='Scheme', y=metric, data=df_all, ax=ax)
-            ax.set_title(
-                f'{title_metric} Distribution - {protocol.upper()}', fontsize=16)
-            ax.set_xlabel('Scheme', fontsize=16)
-            ax.set_ylabel(ylabel, fontsize=16)
-            ax.tick_params(axis='both', labelsize=14)
+            sns.boxplot(x='Scheme', y=metric, data=df_all,
+                        ax=ax, width=0.4, palette=COLOR_PALETTE)
+            style_axis(ax, 'Scheme', metric)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, f'client_boxplot_{protocol}.png'))
@@ -210,15 +193,23 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
     )
 
     # --- SERVER METRICS ---
-    lines.append("## Server Metrics Analysis\n")
+    lines.append("## Server Metrics Analysis (Boxplot Summary)\n")
     lines.append(
-        "The server-side metrics are captured as time series data over connection lifetimes, "
-        "aggregated to distributions over trials. These metrics indicate computational load, memory footprint, "
-        "network throughput, and connection durations.\n"
+        "The server-side metrics are captured as aggregated statistics over trials. These metrics indicate computational load, memory footprint, "
+        "and network throughput.\n"
     )
 
-    server_metrics = ['CPU(%)', 'Memory(MB)',
-                      'Throughput(MB/s)', 'ConnDuration(s)']
+    # Removed 'ConnDuration(s)' as requested
+    server_metrics = ['CPU(%)', 'Memory(MB)', 'Throughput(MB/s)']
+
+    def count_outliers(series):
+        q1 = series.quantile(0.25)
+        q3 = series.quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        return ((series < lower_bound) | (series > upper_bound)).sum()
+
     for metric in server_metrics:
         rsa_vals = server_data['rsa-logs'][metric]
         mldsa_vals = server_data['mldsa-logs'][metric]
@@ -237,14 +228,6 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
 
         rsa_iqr = rsa_vals.quantile(0.75) - rsa_vals.quantile(0.25)
         mldsa_iqr = mldsa_vals.quantile(0.75) - mldsa_vals.quantile(0.25)
-
-        def count_outliers(series):
-            q1 = series.quantile(0.25)
-            q3 = series.quantile(0.75)
-            iqr = q3 - q1
-            lower_bound = q1 - 1.5 * iqr
-            upper_bound = q3 + 1.5 * iqr
-            return ((series < lower_bound) | (series > upper_bound)).sum()
 
         rsa_outliers = count_outliers(rsa_vals)
         mldsa_outliers = count_outliers(mldsa_vals)
@@ -295,14 +278,61 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
             lines.append(
                 "- Throughput measures data handling capacity; higher median and stability are favorable."
             )
-        elif metric == 'ConnDuration(s)':
-            lines.append(
-                "- Connection duration reflects connection lifecycle; shorter durations might indicate faster handshakes or terminations."
-            )
         lines.append("")
 
+    # --- TIME SERIES TREND ANALYSIS FOR SERVER ---
+    lines.append("## Server Metrics Time Series Trend Analysis\n")
+    lines.append(
+        "This section explores the temporal behavior of server CPU usage and throughput over connection durations, highlighting trends, peaks, and variability.\n"
+    )
+    try:
+        for metric in ['CPU(%)', 'Throughput(MB/s)']:
+            rsa_df = server_data['rsa-logs']
+            mldsa_df = server_data['mldsa-logs']
+
+            rsa_series = rsa_df[metric].dropna()
+            mldsa_series = mldsa_df[metric].dropna()
+
+            if 'Elapsed(s)' in rsa_df.columns and 'Elapsed(s)' in mldsa_df.columns:
+                rsa_avg_trend = rsa_df.groupby('Elapsed(s)')[metric].mean()
+                mldsa_avg_trend = mldsa_df.groupby('Elapsed(s)')[metric].mean()
+
+                rsa_peak = rsa_avg_trend.max()
+                mldsa_peak = mldsa_avg_trend.max()
+
+                rsa_std_trend = rsa_avg_trend.std()
+                mldsa_std_trend = mldsa_avg_trend.std()
+            else:
+                rsa_peak = rsa_series.max()
+                mldsa_peak = mldsa_series.max()
+                rsa_std_trend = rsa_series.std()
+                mldsa_std_trend = mldsa_series.std()
+
+            lines.append(f"### Metric: `{metric}`")
+            lines.append(
+                f"- RSA average peak: {rsa_peak:.2f}, standard deviation over time: {rsa_std_trend:.2f}")
+            lines.append(
+                f"- ML-DSA average peak: {mldsa_peak:.2f}, standard deviation over time: {mldsa_std_trend:.2f}")
+
+            if rsa_peak > mldsa_peak:
+                lines.append(
+                    "- RSA experiences higher CPU/throughput peaks, possibly indicating bursts of higher load or processing.")
+            else:
+                lines.append(
+                    "- ML-DSA experiences higher CPU/throughput peaks.")
+
+            if rsa_std_trend > mldsa_std_trend:
+                lines.append(
+                    "- RSA shows more variability over time, suggesting less consistent resource usage.")
+            else:
+                lines.append("- ML-DSA shows more variability over time.")
+
+            lines.append("")
+    except Exception as e:
+        lines.append(f"Time series trend analysis failed due to error: {e}\n")
+
     # --- CLIENT METRICS ---
-    lines.append("## Client Metrics Analysis\n")
+    lines.append("## Client Metrics Analysis (Boxplot Summary)\n")
     lines.append(
         "Client-side metrics represent latency, handshake times, RTT, and total completion times, "
         "crucial for user experience and responsiveness.\n"
@@ -391,56 +421,6 @@ def generate_detailed_data_insights(protocol, server_data, client_data):
             )
         lines.append("")
 
-    # --- TIME SERIES TREND SUMMARY ---
-    lines.append(
-        "## Time Series Trend Analysis (Server CPU % and Throughput MB/s)\n")
-    try:
-        for metric in ['CPU(%)', 'Throughput(MB/s)']:
-            rsa_df = server_data['rsa-logs']
-            mldsa_df = server_data['mldsa-logs']
-
-            rsa_series = rsa_df[metric].dropna()
-            mldsa_series = mldsa_df[metric].dropna()
-
-            # Group by elapsed time if available, else mean overall
-            if 'Elapsed(s)' in rsa_df.columns and 'Elapsed(s)' in mldsa_df.columns:
-                rsa_avg_trend = rsa_df.groupby('Elapsed(s)')[metric].mean()
-                mldsa_avg_trend = mldsa_df.groupby('Elapsed(s)')[metric].mean()
-
-                rsa_peak = rsa_avg_trend.max()
-                mldsa_peak = mldsa_avg_trend.max()
-
-                rsa_std_trend = rsa_avg_trend.std()
-                mldsa_std_trend = mldsa_avg_trend.std()
-            else:
-                rsa_peak = rsa_series.max()
-                mldsa_peak = mldsa_series.max()
-                rsa_std_trend = rsa_series.std()
-                mldsa_std_trend = mldsa_series.std()
-
-            lines.append(f"### Metric: `{metric}`")
-            lines.append(
-                f"- RSA average peak: {rsa_peak:.2f}, standard deviation over time: {rsa_std_trend:.2f}")
-            lines.append(
-                f"- ML-DSA average peak: {mldsa_peak:.2f}, standard deviation over time: {mldsa_std_trend:.2f}")
-
-            if rsa_peak > mldsa_peak:
-                lines.append(
-                    "- RSA experiences higher CPU/throughput peaks, possibly indicating bursts of higher load or processing.")
-            else:
-                lines.append(
-                    "- ML-DSA experiences higher CPU/throughput peaks.")
-
-            if rsa_std_trend > mldsa_std_trend:
-                lines.append(
-                    "- RSA shows more variability over time, suggesting less consistent resource usage.")
-            else:
-                lines.append("- ML-DSA shows more variability over time.")
-
-            lines.append("")
-    except Exception as e:
-        lines.append(f"Time series trend analysis failed due to error: {e}\n")
-
     # --- CLOSING SUMMARY ---
     lines.append("---\n")
     lines.append("## Overall Summary\n")
@@ -465,37 +445,26 @@ def main():
         client_data = {}
 
         for scheme in SCHEMES:
-            # Server
             s_files = collect_csvs('Server', scheme, protocol)
-            s_dfs = load_server_metrics(s_files)
-            server_df = aggregate_server_time_series(s_dfs)
-            server_df = convert_time_units(server_df, ['ConnDuration(s)'])
+            server_df = load_server_metrics_avg_line(s_files, max_lines=200)
+            server_df = convert_time_units(server_df, [])
             server_data[scheme] = server_df
 
-            # Client
             c_files = collect_csvs('Client', scheme, protocol)
             client_data[scheme] = load_client_metrics(c_files)
 
-        # Server plots
         plot_time_series_server(server_data, protocol)
         plot_box_server(server_data, protocol)
-
-        # Client plots
-        plot_time_series_client(client_data, protocol)
         plot_box_client(client_data, protocol)
 
         # Call the detailed explanation generator function
         description_text = generate_detailed_data_insights(
             protocol, server_data, client_data)
-
         # Save the detailed description to a text file in your output folder
         output_description_path = os.path.join(
             OUTPUT_DIR, f"plot_descriptions_{protocol}.md")
         with open(output_description_path, 'w') as f:
             f.write(description_text)
-
-        print(f"Detailed textual analysis saved to {output_description_path}")
-        print(f'✅ Completed analysis for {protocol.upper()}')
 
 
 if __name__ == '__main__':
