@@ -18,6 +18,7 @@ This version contains the most stable, cleaned, and benchmark-accurate scripts i
 - Accurate Benchmarking
 - Captured Metrics
 - Graphs
+- Demo Video
 
 ---
 
