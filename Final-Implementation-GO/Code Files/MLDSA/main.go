@@ -537,10 +537,15 @@ func handleConnWithVerify(rw io.ReadWriter, metrics *MetricsLogger) {
 	log.Printf("📝 Received %d bytes of signature", len(signature))
 
 	// Verify signature
+	hstart := time.Now()
 	if ok := clientMLPublic.Scheme().Verify(clientMLPublic, data, signature, nil); !ok {
+		hstop := time.Since(hstart)
+		log.Printf("⏱ Verification duration: %v", hstop)
 		log.Println("❌ Signature verification failed")
 	} else {
+		log.Printf("⏱ Verification duration: %v", hstop)
 		log.Println("✅ Signature verified successfully")
+		hstop := time.Since(hstart)
 		log.Printf("🔍 First 16 bytes of data: %x", data[:min(16, len(data))])
 	}
 }
