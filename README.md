@@ -16,6 +16,8 @@ This version contains the most stable, cleaned, and benchmark-accurate scripts i
 - RSA and ML-DSA configurations in Golang
 - TLS Implementation
 - Accurate Benchmarking
+- Captured Metrics
+- Graphs
 
 ---
 
