@@ -543,9 +543,9 @@ func handleConnWithVerify(rw io.ReadWriter, metrics *MetricsLogger) {
 		log.Printf("⏱ Verification duration: %v", hstop)
 		log.Println("❌ Signature verification failed")
 	} else {
+		hstop := time.Since(hstart)
 		log.Printf("⏱ Verification duration: %v", hstop)
 		log.Println("✅ Signature verified successfully")
-		hstop := time.Since(hstart)
 		log.Printf("🔍 First 16 bytes of data: %x", data[:min(16, len(data))])
 	}
 }
