@@ -1,4 +1,4 @@
-# TLS Benchmark Discrepancy Research
+# Post-Quantum Secure Transport: Module Lattice Based Digital Signatures into TCP and QUIC Research Artifacts
 
 This repository contains a collection of scripts and output files used to benchmark and analyze implementation of RSA vs ML-DSA in TCP and QUIC. The project was conducted as part of a research linked below.
 
@@ -6,14 +6,14 @@ This repository contains a collection of scripts and output files used to benchm
 
 ---
 
-## Final Benchmark Version
+## Final Version
 
 The codebase used in the **final research report** is located in:
 
 `Final-Implementation-GO/`
 
 This version contains the most stable, cleaned, and benchmark-accurate scripts including:
-- RSA and Post-Quantum configurations in Golang
+- RSA and ML-DSA configurations in Golang
 - TLS Implementation
 - Accurate Benchmarking
 
