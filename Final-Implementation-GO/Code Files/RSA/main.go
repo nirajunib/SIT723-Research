@@ -486,9 +486,14 @@ func handleConnWithVerify(rw io.ReadWriter, pubKey *rsa.PublicKey, metrics *Metr
 
     // Verify signature
     hash := sha256.Sum256(data)
+	hstart := time.Now()
     if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hash[:], signature); err != nil {
+		hstop := time.Since(hstart)
+		log.Printf("⏱ Verification duration: %v", hstop)
         log.Println("❌ Signature verification failed:", err)
     } else {
+		hstop := time.Since(hstart)
+		log.Printf("⏱ Verification duration: %v", hstop)
         log.Println("✅ Signature verified successfully")
         log.Printf("🔍 First 16 bytes of data: %x", data[:min(16, len(data))])
     }
