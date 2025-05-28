@@ -1,4 +1,4 @@
-# Post-Quantum Secure Transport: Module Lattice Based Digital Signatures into TCP and QUIC Research Artifacts
+# Open Source Implementation of the Post-Quantum Secure TransportLayer: Quantum Signatures into TCP and QUIC
 
 This repository contains a collection of scripts and output files used to benchmark and analyze implementation of RSA vs ML-DSA in TCP and QUIC. The project was conducted as part of a research linked below.
 
