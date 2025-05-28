@@ -25,7 +25,7 @@ This version contains the most stable, cleaned, and benchmark-accurate scripts i
 ## Sample Output & Visualization
 
 - Raw client and server output logs are located in `Final-Implementation-GO/Output/`.
-- Benchmark plotting scripts can be found in `Final-Implementation-GO/Output/plot-*.py`, used to visualize discrepancies across various tests.
+- Benchmark plotting scripts can be found in `Final-Implementation-GO/Code-Files/Scripts/plot-*.py`.
 
 ---
 
